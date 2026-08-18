@@ -1,8 +1,10 @@
 import argparse
+import os
 import threading
 import time
 
 import cv2
+import numpy as np
 from flask import Flask, Response, render_template_string
 
 
@@ -42,9 +44,20 @@ class Camera:
         self.latest_frame = None
         self.running = False
         self.capture = None
+        self.bright_threshold = 180
+        self.min_area = 500
+        self.max_area = 30000
 
     def start(self):
-        self.capture = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
+        device_value = self.device
+        if isinstance(device_value, str) and device_value.isdigit():
+            device_value = int(device_value)
+
+        if os.name == "nt" and isinstance(device_value, int):
+            self.capture = cv2.VideoCapture(device_value, cv2.CAP_DSHOW)
+        else:
+            self.capture = cv2.VideoCapture(device_value)
+
         if not self.capture.isOpened():
             raise RuntimeError(f"Could not open camera device: {self.device}")
 
@@ -56,6 +69,68 @@ class Camera:
         thread = threading.Thread(target=self._capture_loop, daemon=True)
         thread.start()
 
+    def _process_frame(self, frame):
+        processed = frame.copy()
+        processed = cv2.resize(processed, (self.width, self.height))
+
+        gray = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, mask = cv2.threshold(blur, self.bright_threshold, 255, cv2.THRESH_BINARY)
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < self.min_area or area > self.max_area:
+                continue
+
+            x, y, w, h = cv2.boundingRect(contour)
+            if w <= 0 or h <= 0:
+                continue
+
+            aspect_ratio = w / float(h)
+            if not (0.7 < aspect_ratio < 1.5):
+                continue
+
+            roi = gray[y:y + h, x:x + w]
+            if roi.size == 0:
+                continue
+
+            avg_intensity = float(np.mean(roi))
+            if avg_intensity < self.bright_threshold:
+                continue
+
+            cv2.rectangle(processed, (x, y), (x + w, y + h), (0, 255, 255), 2)
+            label = "又方又亮的东西"
+            cv2.putText(
+                processed,
+                label,
+                (x, max(0, y - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+        timestamp = time.strftime("%H:%M:%S")
+        cv2.putText(
+            processed,
+            timestamp,
+            (12, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+        return processed
+
     def _capture_loop(self):
         while self.running:
             ok, frame = self.capture.read()
@@ -63,20 +138,10 @@ class Camera:
                 time.sleep(0.05)
                 continue
 
-            timestamp = time.strftime("%H:%M:%S")
-            cv2.putText(
-                frame,
-                timestamp,
-                (12, 28),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 0),
-                2,
-                cv2.LINE_AA,
-            )
+            processed = self._process_frame(frame)
 
             with self.lock:
-                self.latest_frame = frame
+                self.latest_frame = processed
 
     def jpeg_frames(self, jpeg_quality):
         while True:
@@ -131,7 +196,7 @@ def create_app(camera, jpeg_quality):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Local MJPEG camera stream server")
-    parser.add_argument("--device", default="/dev/video0", help="Camera device path")
+    parser.add_argument("--device", default="0", help="Camera device index or path (default: 0 for Windows/local webcam)")
     parser.add_argument("--host", default="0.0.0.0", help="Server bind address")
     parser.add_argument("--port", default=5000, type=int, help="Server port")
     parser.add_argument("--width", default=640, type=int, help="Capture width")

@@ -1,43 +1,141 @@
-# Bad Detector Camera Stream
+# Bad Detector
 
-Minimal Raspberry Pi camera streaming server for early badminton testing.
+Simple Raspberry Pi camera stream with early shuttle candidate detection.
 
-## Install on Raspberry Pi
+## 1. Copy To Pi
 
-```bash
-sudo apt update
-sudo apt install -y python3-pip python3-venv v4l-utils
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+From Windows PowerShell:
+
+```powershell
+scp -r D:\Project\bad_detector scotty@<pi-ip>:~/
 ```
 
-## Check camera
+If replacing an old copy:
+
+```powershell
+ssh scotty@<pi-ip> "rm -rf ~/bad_detector"
+scp -r D:\Project\bad_detector scotty@<pi-ip>:~/
+```
+
+## 2. Install On Pi
+
+```bash
+cd ~/bad_detector
+sudo apt update
+sudo apt install -y python3-opencv python3-flask v4l-utils
+```
+
+## 3. Check Camera
 
 ```bash
 v4l2-ctl --list-devices
 v4l2-ctl --device=/dev/video0 --list-formats-ext
 ```
 
-## Run
+## 4. Run Stream
 
 ```bash
-source .venv/bin/activate
-python stream_server.py --device /dev/video0 --width 640 --height 480 --fps 30
+python3 stream_server.py --device /dev/video0 --width 640 --height 480 --fps 120 --fourcc MJPG --jpeg-quality 50
 ```
 
-Then open this from a phone or laptop on the same network:
+Open from phone/laptop:
 
 ```text
 http://<pi-ip>:5000
 ```
 
-For example:
+Debug streams:
 
 ```text
-http://192.168.137.42:5000
+http://<pi-ip>:5000/video_feed/annotated
+http://<pi-ip>:5000/video_feed/candidate
+http://<pi-ip>:5000/video_feed/motion
 ```
 
-## Notes
+## 5. Tune Thresholds
 
-Keep the preview modest at first. The detector can later process higher FPS internally while the phone receives a lower-FPS preview.
+The web page has sliders for:
+
+```text
+Brightness  higher = only very white objects
+Motion      higher = only faster/bigger changes
+Min area    higher = ignore tiny noise
+Max area    lower = ignore people/hands/large reflections
+```
+
+Startup defaults can also be changed:
+
+```bash
+python3 stream_server.py --device /dev/video0 --fourcc MJPG --brightness-threshold 170 --motion-threshold 22 --min-area 3 --max-area 500
+```
+
+## 6. Optional Pi Hotspot
+
+This may disconnect Wi-Fi SSH. Use Ethernet SSH while testing hotspot mode.
+
+```bash
+chmod +x setup_hotspot.sh
+./setup_hotspot.sh BadDetector badminton123
+```
+
+Phone connects to:
+
+```text
+SSID: BadDetector
+Password: badminton123
+```
+
+Then open:
+
+```text
+http://10.42.0.1:5000
+```
+
+## 7. Autostart On Boot
+
+This assumes:
+
+```text
+Project: /home/scotty/bad_detector
+Venv:    /home/scotty/bad_detector/venv
+User:    scotty
+```
+
+Create the venv if needed:
+
+```bash
+cd ~/bad_detector
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Install and start the service:
+
+```bash
+chmod +x install_service.sh
+./install_service.sh
+```
+
+Useful commands:
+
+```bash
+sudo systemctl status bad-detector
+sudo systemctl restart bad-detector
+sudo systemctl stop bad-detector
+journalctl -u bad-detector -f
+```
+
+## Local Laptop Test
+
+```powershell
+python .\test_shuttle.py --camera 0 --width 640 --height 480 --fps 60 --dshow
+```
+
+Keyboard controls:
+
+```text
+q      quit
+[ / ]  lower / raise brightness threshold
+- / =  lower / raise motion threshold
+```
